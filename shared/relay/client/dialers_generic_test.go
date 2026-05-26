@@ -31,6 +31,24 @@ func protocols(dialers []dialer.DialeFn) []string {
 	return out
 }
 
+// clearRelayProxyEnv neutralises any proxy configuration inherited from the
+// developer's shell. getDialers consults the environment, so without this a
+// machine with HTTPS_PROXY set would see every transport collapse to WebSocket.
+func clearRelayProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"HTTP_PROXY",
+		"http_proxy",
+		"HTTPS_PROXY",
+		"https_proxy",
+		"NO_PROXY",
+		"no_proxy",
+		"REQUEST_METHOD",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestGetDialers(t *testing.T) {
 	const url = "rels://relay.example:443"
 
@@ -54,6 +72,7 @@ func TestGetDialers(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			clearRelayProxyEnv(t)
 			t.Setenv(EnvRelayTransport, tc.mode)
 			if tc.mode == "" {
 				os.Unsetenv(EnvRelayTransport)
@@ -76,11 +95,54 @@ func TestGetDialers(t *testing.T) {
 	}
 }
 
+// TestGetDialersProxyForcesWebSocket locks the Publify behaviour: an HTTP proxy
+// can only carry TCP via CONNECT, so QUIC is unreachable and WebSocket must win
+// over every transport mode, including an explicit QUIC pin.
+func TestGetDialersProxyForcesWebSocket(t *testing.T) {
+	const url = "rels://relay.example:443"
+
+	for _, mode := range []string{"auto", "quic", "prefer-quic", "prefer-ws", "ws"} {
+		t.Run(mode, func(t *testing.T) {
+			clearRelayProxyEnv(t)
+			t.Setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
+			t.Setenv(EnvRelayTransport, mode)
+
+			c := &Client{
+				log:               log.WithField("test", t.Name()),
+				connectionURL:     url,
+				mtu:               iface.DefaultMTU,
+				transportFallback: newTransportFallback(),
+			}
+
+			assert.Equal(t, []string{"ws"}, protocols(c.getDialers(transportModeFromEnv())))
+		})
+	}
+}
+
+// TestGetDialersNoProxyKeepsDefaultOrder guards the inverse: NO_PROXY covering the
+// relay host must leave the transport selection untouched.
+func TestGetDialersNoProxyKeepsDefaultOrder(t *testing.T) {
+	clearRelayProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
+	t.Setenv("NO_PROXY", "relay.example")
+	t.Setenv(EnvRelayTransport, string(TransportModeAuto))
+
+	c := &Client{
+		log:               log.WithField("test", t.Name()),
+		connectionURL:     "rels://relay.example:443",
+		mtu:               iface.DefaultMTU,
+		transportFallback: newTransportFallback(),
+	}
+
+	assert.Equal(t, []string{"quic", "ws"}, protocols(c.getDialers(transportModeFromEnv())))
+}
+
 // TestStickyFallbackAfterDatagramTooLarge verifies the full chain: an oversized
 // datagram records a fallback that makes the next dial pick WebSocket, the way a
 // reconnect would after the connection is closed.
 func TestStickyFallbackAfterDatagramTooLarge(t *testing.T) {
 	const url = "rels://relay.example:443"
+	clearRelayProxyEnv(t)
 	t.Setenv(EnvRelayTransport, string(TransportModeAuto))
 
 	c := &Client{

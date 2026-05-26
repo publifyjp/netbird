@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	"github.com/coder/websocket"
 	log "github.com/sirupsen/logrus"
@@ -83,6 +84,7 @@ func prepareURL(address string) (string, error) {
 // transport's DialContext so the caller can read its RemoteAddr.
 func httpClientNbDialer(serverName string, underlyingOut *net.Conn) *http.Client {
 	customDialer := nbnet.NewDialer()
+	var proxyUsed atomic.Bool
 
 	certPool, err := x509.SystemCertPool()
 	if err != nil || certPool == nil {
@@ -91,9 +93,17 @@ func httpClientNbDialer(serverName string, underlyingOut *net.Conn) *http.Client
 	}
 
 	customTransport := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			proxyURL, err := nbnet.ProxyFromEnvironment(req)
+			proxyUsed.Store(proxyURL != nil)
+			if proxyURL != nil {
+				log.Debugf("dialing Relay WebSocket via proxy %s", nbnet.RedactedURL(proxyURL))
+			}
+			return proxyURL, err
+		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			c, err := customDialer.DialContext(ctx, network, addr)
-			if err == nil && underlyingOut != nil {
+			if err == nil && underlyingOut != nil && !proxyUsed.Load() {
 				*underlyingOut = c
 			}
 			return c, err
