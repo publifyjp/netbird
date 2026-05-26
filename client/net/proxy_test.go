@@ -5,8 +5,11 @@ package net
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +91,67 @@ func TestProxyURLForAddressHonorsNoProxy(t *testing.T) {
 	}
 	if proxyURL != nil {
 		t.Fatalf("ProxyURLForAddress() = %v, want nil", proxyURL)
+	}
+}
+
+func TestDialContextWithProxyConnectFailureDoesNotLeakResponseBody(t *testing.T) {
+	clearProxyEnv(t)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen proxy: %v", err)
+	}
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+
+		req, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		body := "reflected proxy auth: " + req.Header.Get(proxyAuthHeaderKey) + " supersecret"
+		resp := "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Type: text/plain\r\nContent-Length: " +
+			strconv.Itoa(len(body)) + "\r\n\r\n" + body
+		if _, err := conn.Write([]byte(resp)); err != nil {
+			errCh <- err
+		}
+	}()
+
+	t.Setenv("HTTPS_PROXY", "http://user:supersecret@"+listener.Addr().String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	conn, proxyURL, err := DialContextWithProxy(ctx, &net.Dialer{}, "https", "management.example.com:443", "netbird-test")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("DialContextWithProxy() err = nil, want CONNECT failure")
+	}
+	if proxyURL == nil {
+		t.Fatal("DialContextWithProxy() proxyURL = nil, want configured proxy")
+	}
+
+	encodedSecret := base64.StdEncoding.EncodeToString([]byte("user:supersecret"))
+	for _, leaked := range []string{"supersecret", encodedSecret, proxyAuthHeaderKey} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("DialContextWithProxy() error leaked %q: %v", leaked, err)
+		}
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("proxy server error = %v", err)
+	default:
 	}
 }
 
