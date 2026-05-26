@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"time"
@@ -95,16 +94,17 @@ func DialContextWithProxy(ctx context.Context, dialer ContextDialer, targetSchem
 		return nil, proxyURL, err
 	}
 
-	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
+	proxyConn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, proxyURL, fmt.Errorf("dial proxy %s: %w", RedactedURL(proxyURL), err)
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
-		defer func() { _ = conn.SetDeadline(time.Time{}) }()
+		_ = proxyConn.SetDeadline(deadline)
+		defer func() { _ = proxyConn.SetDeadline(time.Time{}) }()
 	}
 
+	conn := proxyConn
 	if strings.EqualFold(proxyURL.Scheme, "https") {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: proxyURL.Hostname()})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
@@ -176,11 +176,7 @@ func doHTTPConnect(ctx context.Context, conn net.Conn, targetAddr string, proxyU
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		dump, dumpErr := httputil.DumpResponse(resp, true)
-		if dumpErr != nil {
-			return nil, fmt.Errorf("CONNECT failed with status %s", resp.Status)
-		}
-		return nil, fmt.Errorf("CONNECT failed with response %q", dump)
+		return nil, fmt.Errorf("CONNECT failed with status %s", resp.Status)
 	}
 
 	if reader.Buffered() == 0 {
