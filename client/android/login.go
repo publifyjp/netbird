@@ -65,8 +65,13 @@ func NewAuthWithConfig(ctx context.Context, config *profilemanager.Config) *Auth
 // If it returns a flow info than save the configuration and return true. If it gets a codes.NotFound, it means that SSO
 // is not supported and returns false without saving the configuration. For other errors return false.
 func (a *Auth) SaveConfigIfSSOSupported(listener SSOListener) {
+	a.SaveConfigIfSSOSupportedWithEnv(listener, nil)
+}
+
+// SaveConfigIfSSOSupportedWithEnv test the connectivity with the management server using the provided environment variables.
+func (a *Auth) SaveConfigIfSSOSupportedWithEnv(listener SSOListener, envList *EnvList) {
 	go func() {
-		sso, err := a.saveConfigIfSSOSupported()
+		sso, err := a.saveConfigIfSSOSupported(envList)
 		if err != nil {
 			listener.OnError(err)
 		} else {
@@ -75,7 +80,9 @@ func (a *Auth) SaveConfigIfSSOSupported(listener SSOListener) {
 	}()
 }
 
-func (a *Auth) saveConfigIfSSOSupported() (bool, error) {
+func (a *Auth) saveConfigIfSSOSupported(envList *EnvList) (bool, error) {
+	exportEnvList(envList)
+
 	authClient, err := auth.NewAuth(a.ctx, a.config.PrivateKey, a.config.ManagementURL, a.config)
 	if err != nil {
 		return false, fmt.Errorf("failed to create auth client: %v", err)
@@ -97,8 +104,13 @@ func (a *Auth) saveConfigIfSSOSupported() (bool, error) {
 
 // LoginWithSetupKeyAndSaveConfig test the connectivity with the management server with the setup key.
 func (a *Auth) LoginWithSetupKeyAndSaveConfig(resultListener ErrListener, setupKey string, deviceName string) {
+	a.LoginWithSetupKeyAndSaveConfigWithEnv(resultListener, setupKey, deviceName, nil)
+}
+
+// LoginWithSetupKeyAndSaveConfigWithEnv test the connectivity with the management server with the setup key using the provided environment variables.
+func (a *Auth) LoginWithSetupKeyAndSaveConfigWithEnv(resultListener ErrListener, setupKey string, deviceName string, envList *EnvList) {
 	go func() {
-		err := a.loginWithSetupKeyAndSaveConfig(setupKey, deviceName)
+		err := a.loginWithSetupKeyAndSaveConfig(setupKey, deviceName, envList)
 		if err != nil {
 			resultListener.OnError(err)
 		} else {
@@ -107,7 +119,9 @@ func (a *Auth) LoginWithSetupKeyAndSaveConfig(resultListener ErrListener, setupK
 	}()
 }
 
-func (a *Auth) loginWithSetupKeyAndSaveConfig(setupKey string, deviceName string) error {
+func (a *Auth) loginWithSetupKeyAndSaveConfig(setupKey string, deviceName string, envList *EnvList) error {
+	exportEnvList(envList)
+
 	authClient, err := auth.NewAuth(a.ctx, a.config.PrivateKey, a.config.ManagementURL, a.config)
 	if err != nil {
 		return fmt.Errorf("failed to create auth client: %v", err)
